@@ -1,11 +1,14 @@
 name: Await a simulator
 description: >
-  Wait until CoreSimulator has enumerated the named device, so a destination in
-  this workflow resolves.
+  Resolve the simulator a destination should name — a per-repository clone on a
+  self-hosted runner, the stock device on a hosted one — and wait until
+  CoreSimulator has enumerated it.
 
-# `xcodebuild` asks CoreSimulator for the device list once and fails outright if
-# the answer is empty. On a cold runner the service sometimes has not enumerated
-# anything yet, and the error is not "not ready" but:
+# Two problems, one place to solve them.
+#
+# **A cold service reports no devices at all.** `xcodebuild` asks CoreSimulator
+# for the device list once and fails outright if the answer is empty. On a cold
+# runner the error is not "not ready" but:
 #
 #   Unable to find a device matching the provided destination specifier:
 #           { platform:iOS Simulator, OS:latest, name:iPhone 17 Pro }
@@ -13,35 +16,79 @@ description: >
 #           { platform:macOS ... }
 #           { platform:iOS ... placeholder }
 #
-# — a device list with no simulators in it at all, on a runner whose image ships
-# five of them. It is transient: the sanitizer job hit it on the same run where
-# the job beside it, on the same image, resolved the same device fine. Asking
-# again is what fixes it, so this asks until the answer stops being empty rather
-# than letting a cold service read as a missing device.
+# — an empty device list on a runner whose image ships five of them. It is
+# transient: one job hit it on the same run where the job beside it, on the same
+# image, resolved the same device fine. Asking again is what fixes it.
+#
+# **One Mac, three repositories, one simulator.** Each iOS repo has its own
+# runner on the same Mac, so their jobs can run at the same time, and all of
+# them named `iPhone 17 Pro` — of which there was exactly one, with one UDID.
+# Two `xcodebuild test` runs installing to and driving the same device is a race
+# whose symptom is UI tests failing in ways that do not reproduce. So on a
+# self-hosted runner this hands back a clone named for the repository —
+# `iPhone 17 Pro (dose-app)` — created on first use from the stock device's own
+# type and runtime, and left in place afterwards.
+#
+# On a hosted runner it hands back the stock name unchanged: the image is
+# exclusive to the job, there is nothing to collide with, and inventing devices
+# would only make the run slower.
 inputs:
   device:
-    description: The simulator name a destination asks for, exactly as written.
+    description: >
+      The stock simulator name, exactly as the image publishes it — e.g.
+      "iPhone 17 Pro". Not the per-repository name; this action derives that.
     required: true
+outputs:
+  name:
+    description: >
+      The device name to put in a `-destination`. The input on a hosted runner,
+      the per-repository clone on a self-hosted one.
+    value: ${{ steps.resolve.outputs.name }}
 
 runs:
   using: composite
   steps:
-    - shell: bash
+    - id: resolve
+      shell: bash
       env:
         DEVICE: ${{ inputs.device }}
       run: |
+        # `resolve.py` sits beside this action; see it for why matching happens
+        # on simctl's JSON rather than on its text listing.
+        resolve() {
+          xcrun simctl list devices available -j 2>/dev/null \
+            | python3 "$GITHUB_ACTION_PATH/resolve.py" "$1"
+        }
+
+        if [ "${RUNNER_ENVIRONMENT:-github-hosted}" = "self-hosted" ]; then
+          TARGET="$DEVICE (${GITHUB_REPOSITORY##*/})"
+        else
+          TARGET="$DEVICE"
+        fi
+
         for attempt in $(seq 1 30); do
-          # `|| true`: a service still coming up exits non-zero, which is the
-          # case being waited out, not a reason to stop waiting.
-          available=$(xcrun simctl list devices available 2>/dev/null || true)
-          case "$available" in
-            *"$DEVICE"*)
-              echo "$DEVICE available after ${attempt} attempt(s)"
-              exit 0
-              ;;
-          esac
+          if resolve "$TARGET" >/dev/null; then
+            echo "$TARGET available after ${attempt} attempt(s)"
+            echo "name=$TARGET" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The clone is missing rather than the service being cold if the stock
+          # device it would be cloned from is already answering. Only then is
+          # creating one the right move — otherwise keep waiting, because a
+          # CoreSimulator that has enumerated nothing yet would have us build a
+          # device out of an answer it has not given.
+          if [ "$TARGET" != "$DEVICE" ] && spec=$(resolve "$DEVICE"); then
+            devicetype=${spec%%$'\t'*}
+            runtime=${spec##*$'\t'}
+            echo "creating $TARGET from ${devicetype##*.} on ${runtime##*.}"
+            xcrun simctl create "$TARGET" "$devicetype" "$runtime" >/dev/null
+            continue
+          fi
+
           sleep 2
         done
-        echo "::error::no simulator named '$DEVICE' after 60s — either the image dropped it or CoreSimulator never came up"
+
+        echo "::error::no simulator named '$TARGET' after 60s — either this machine dropped '$DEVICE' or CoreSimulator never came up"
         xcrun simctl list devices available || true
         exit 1

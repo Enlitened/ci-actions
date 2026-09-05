@@ -24,10 +24,19 @@ without three commits. The trade is that a bad push here breaks all three at
 once, which is tolerable while one person commits and a run takes a minute. If
 that stops being true, tag releases and pin to the tag.
 
-This repo is private, so every consumer depends on
-**Settings → Actions → General → Access → "Accessible from repositories in the
-organization"** being set. Without it the consuming workflow fails at the
-`uses:` line with a checkout error, not an obvious permissions message.
+This repo is public so that private repos can consume it. Sharing a *private*
+repo's actions across an organisation is a GitHub Team feature; the API refuses
+the `organization` access level on Free with *"Only 'none' and 'user' access
+levels are allowed for this repository"*. Public is the free route to the same
+end, and there is nothing here worth keeping back: two composite actions, no
+credentials, no project code.
+
+**Nothing in this repo should ever run on a self-hosted runner.** It is public,
+so anyone can fork it and open a pull request; a workflow here with
+`runs-on: self-hosted` would be an invitation to run a stranger's code on the
+Mac that builds the apps. This repo deliberately has no workflows at all. The
+runners are registered against the three iOS repos individually, never to the
+organisation, for the same reason.
 
 ## What is here
 

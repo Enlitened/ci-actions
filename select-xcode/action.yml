@@ -1,0 +1,91 @@
+name: Select Xcode
+description: >
+  Point the build at the Xcode a project is pinned to, and say what the runner
+  actually has when that one is not on it.
+
+# Shared by the iOS repos in this organisation, so the version is an input
+# rather than a constant. It still defaults, because all three currently build
+# against the same Xcode on the same Mac and a repo that does not care should
+# not have to say so.
+#
+# The check exists because `xcode-select` says only "invalid developer
+# directory" and never what *is* installed. Every job in japa's workflow failed
+# on that one line, in seventeen seconds, for eighteen consecutive runs, against
+# a path (`Xcode_26.app`) that no runner image has ever published. Listing what
+# is there turns the next occurrence into one line of log.
+#
+# `DEVELOPER_DIR` rather than `sudo xcode-select -switch`: a self-hosted runner
+# is a real Mac with a real sudo, and a password prompt in a headless LaunchAgent
+# hangs the job until the timeout rather than failing it. The environment
+# variable needs no privileges, is what `xcrun` and `xcodebuild` read first, and
+# does not leave the machine switched to a different Xcode after the run.
+inputs:
+  version:
+    description: The Xcode marketing version to build against, e.g. "26.6".
+    required: false
+    default: "26.6"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        # Pinned rather than "latest": these projects build in Swift 6 language
+        # mode with strict concurrency, and a compiler that changes underneath
+        # that turns an unrelated push red.
+        VERSION: ${{ inputs.version }}
+      run: |
+        # A probe must never be what ends this step. The shell here is `-e -o
+        # pipefail`, so an `xcodebuild` that dies inside the command
+        # substitution takes the whole step with it — before the loop can try
+        # the next candidate, and before any of the diagnosis below is
+        # reached. That is not hypothetical: the first `xcodebuild` after the
+        # self-hosted runner's service restarts aborted (SIGABRT, 66ms, not one
+        # byte of output) and every call after it succeeded, and the step
+        # reported only `exit code 134` on a Mac that had the pinned Xcode
+        # installed the whole time.
+        version_at() {
+          # The subshell is where `-e` and `pipefail` are turned off, so a
+          # failed probe is an empty answer rather than the end of the job.
+          ( set +e +o pipefail
+            DEVELOPER_DIR="$1" xcodebuild -version 2>/dev/null | head -1 | awk '{print $2}' )
+        }
+
+        # The hosted images publish versioned aliases only (`Xcode_26.6.app`,
+        # never `Xcode_26.app`); an ordinary Mac has the one unsuffixed bundle.
+        # Both are candidates, and the version is confirmed by asking the
+        # binary rather than by trusting the name — on a self-hosted runner
+        # `Xcode.app` is whatever was installed there last.
+        #
+        # Asked up to three times, for the same reason `await-simulator` asks
+        # again: a service that is still coming up answers wrongly once and
+        # correctly afterwards, and "no Xcode on this runner" is far too loud a
+        # conclusion to draw from a single aborted call.
+        for attempt in 1 2 3; do
+          for candidate in "/Applications/Xcode_${VERSION}.app" /Applications/Xcode.app; do
+            developer="$candidate/Contents/Developer"
+            [ -d "$developer" ] || continue
+            if [ "$(version_at "$developer")" = "$VERSION" ]; then
+              echo "DEVELOPER_DIR=$developer" >> "$GITHUB_ENV"
+              echo "Xcode $VERSION at $candidate (attempt $attempt)"
+              DEVELOPER_DIR="$developer" swift --version
+              exit 0
+            fi
+          done
+          sleep 3
+        done
+
+        # Three attempts in, so this is the pin being wrong rather than a cold
+        # service. Say what is actually installed, and let `xcodebuild` speak
+        # for itself — a bundle that is present but will not answer is a
+        # different problem from a bundle that is not there, and the two are
+        # indistinguishable from the exit code alone.
+        echo "::error::no Xcode $VERSION on this runner (image ${ImageVersion:-self-hosted}). The pin needs moving to one of the versions below."
+        echo "Xcode bundles present:"
+        for app in /Applications/Xcode*.app; do
+          [ -d "$app" ] || continue
+          echo "  $app"
+          ( set +e +o pipefail
+            DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version 2>&1 | sed 's/^/    /' )
+        done
+        exit 1

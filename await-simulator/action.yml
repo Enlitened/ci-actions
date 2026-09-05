@@ -1,0 +1,47 @@
+name: Await a simulator
+description: >
+  Wait until CoreSimulator has enumerated the named device, so a destination in
+  this workflow resolves.
+
+# `xcodebuild` asks CoreSimulator for the device list once and fails outright if
+# the answer is empty. On a cold runner the service sometimes has not enumerated
+# anything yet, and the error is not "not ready" but:
+#
+#   Unable to find a device matching the provided destination specifier:
+#           { platform:iOS Simulator, OS:latest, name:iPhone 17 Pro }
+#   Available destinations for the "Japa" scheme:
+#           { platform:macOS ... }
+#           { platform:iOS ... placeholder }
+#
+# — a device list with no simulators in it at all, on a runner whose image ships
+# five of them. It is transient: the sanitizer job hit it on the same run where
+# the job beside it, on the same image, resolved the same device fine. Asking
+# again is what fixes it, so this asks until the answer stops being empty rather
+# than letting a cold service read as a missing device.
+inputs:
+  device:
+    description: The simulator name a destination asks for, exactly as written.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        DEVICE: ${{ inputs.device }}
+      run: |
+        for attempt in $(seq 1 30); do
+          # `|| true`: a service still coming up exits non-zero, which is the
+          # case being waited out, not a reason to stop waiting.
+          available=$(xcrun simctl list devices available 2>/dev/null || true)
+          case "$available" in
+            *"$DEVICE"*)
+              echo "$DEVICE available after ${attempt} attempt(s)"
+              exit 0
+              ;;
+          esac
+          sleep 2
+        done
+        echo "::error::no simulator named '$DEVICE' after 60s — either the image dropped it or CoreSimulator never came up"
+        xcrun simctl list devices available || true
+        exit 1

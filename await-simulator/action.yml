@@ -38,6 +38,21 @@ description: >
 # On a hosted runner it hands back the stock name unchanged: the image is
 # exclusive to the job, there is nothing to collide with, and inventing devices
 # would only make the run slower.
+#
+# **A device that is listed is not a device that will run anything.** Waiting for
+# CoreSimulator to enumerate the device was the whole of the check, and it passes
+# for a device that has been left booted since a run that was killed — whose
+# SpringBoard then refuses to open the app with `Busy ("Application failed
+# preflight checks")`. Nothing retries that: `xcodebuild` reports it as a failed
+# test having run no tests at all, and because the next job inherits the same
+# device, the next run fails the same way. dose-app failed on this twice in one
+# evening, once with both its unit and its UI step executing nothing, and it is
+# indistinguishable from a real failure in the run summary. So on a self-hosted
+# runner the resolved device is now also *reclaimed* before it is handed back —
+# shut down if something left it up, and stripped of the parallel-testing clones
+# a killed run leaks. Scoped by exact name to the runner's own device, because
+# these runners share a Mac and reclaiming a neighbour's device mid-run would be
+# the very fault this is here to prevent.
 inputs:
   device:
     description: >
@@ -72,9 +87,22 @@ runs:
           TARGET="$DEVICE"
         fi
 
+        # Enumerated is not the same as usable; see `reclaim.py` for what is left
+        # behind by a run that was killed, and why nothing retries past it.
+        reclaim() {
+          [ "${RUNNER_ENVIRONMENT:-github-hosted}" = "self-hosted" ] || return 0
+          xcrun simctl list devices -j 2>/dev/null \
+            | python3 "$GITHUB_ACTION_PATH/reclaim.py" "$1" \
+            | while IFS=$'\t' read -r action udid name; do
+                echo "reclaiming: $action $name"
+                xcrun simctl "$action" "$udid" || true
+              done
+        }
+
         for attempt in $(seq 1 30); do
           if resolve "$TARGET" >/dev/null; then
             echo "$TARGET available after ${attempt} attempt(s)"
+            reclaim "$TARGET"
             echo "name=$TARGET" >> "$GITHUB_OUTPUT"
             exit 0
           fi

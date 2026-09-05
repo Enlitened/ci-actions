@@ -38,6 +38,23 @@ Mac that builds the apps. This repo deliberately has no workflows at all. The
 runners are registered against the three iOS repos individually, never to the
 organisation, for the same reason.
 
+## Checking a repo still holds the shape
+
+```sh
+./check-ios-ci.sh ~/dev/japa ~/dev/dose-app ~/dev/lamp-and-line
+```
+
+Fourteen checks, each one there because it was wrong once and cost a red run or
+a bill: jobs pinned to a hosted image, a missing `CI_RUNNER`, a duplicated copy
+of these actions, `sudo xcode-select`, a destination naming a literal device
+rather than this runner's own, a result bundle never cleared on a persistent
+runner, LFS bytes arriving as pointer files. It reads each checkout's own
+remote, so it works on a clone called anything.
+
+`FAIL` is something broken. `WARN` is something that only costs money, and only
+on the hosted fallback — a 60-minute timeout is 600 billed minutes when a job
+wedges, which is a third of a month. Exits non-zero on any `FAIL`.
+
 ## What is here
 
 - **`select-xcode`** — resolves the pinned Xcode and exports `DEVELOPER_DIR`.

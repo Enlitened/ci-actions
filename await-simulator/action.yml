@@ -20,14 +20,20 @@ description: >
 # transient: one job hit it on the same run where the job beside it, on the same
 # image, resolved the same device fine. Asking again is what fixes it.
 #
-# **One Mac, three repositories, one simulator.** Each iOS repo has its own
-# runner on the same Mac, so their jobs can run at the same time, and all of
-# them named `iPhone 17 Pro` — of which there was exactly one, with one UDID.
-# Two `xcodebuild test` runs installing to and driving the same device is a race
-# whose symptom is UI tests failing in ways that do not reproduce. So on a
-# self-hosted runner this hands back a clone named for the repository —
-# `iPhone 17 Pro (dose-app)` — created on first use from the stock device's own
-# type and runtime, and left in place afterwards.
+# **One Mac, several runners, one simulator.** Each iOS repo has its own runner
+# on the same Mac, so their jobs can run at the same time, and all of them named
+# `iPhone 17 Pro` — of which there was exactly one, with one UDID. Two
+# `xcodebuild test` runs installing to and driving the same device is a race
+# whose symptom is UI tests failing in ways that do not reproduce: dose-app went
+# from nine failing tests to the two that are genuinely broken once it stopped
+# sharing. So on a self-hosted runner this hands back a clone of its own,
+# created on first use from the stock device's own type and runtime and left in
+# place afterwards.
+#
+# Keyed on the runner, not the repository. A runner executes one job at a time,
+# so a device belonging to one can never be contended — which stays true if a
+# repo is ever given a second runner, where a per-repository name would put two
+# of its own jobs back on one device and rebuild the bug.
 #
 # On a hosted runner it hands back the stock name unchanged: the image is
 # exclusive to the job, there is nothing to collide with, and inventing devices
@@ -36,7 +42,7 @@ inputs:
   device:
     description: >
       The stock simulator name, exactly as the image publishes it — e.g.
-      "iPhone 17 Pro". Not the per-repository name; this action derives that.
+      "iPhone 17 Pro". Not the per-runner name; this action derives that.
     required: true
 outputs:
   name:
@@ -61,7 +67,7 @@ runs:
         }
 
         if [ "${RUNNER_ENVIRONMENT:-github-hosted}" = "self-hosted" ]; then
-          TARGET="$DEVICE (${GITHUB_REPOSITORY##*/})"
+          TARGET="$DEVICE ($RUNNER_NAME)"
         else
           TARGET="$DEVICE"
         fi

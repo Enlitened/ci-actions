@@ -44,6 +44,14 @@ inputs:
       The stock simulator name, exactly as the image publishes it — e.g.
       "iPhone 17 Pro". Not the per-runner name; this action derives that.
     required: true
+  boot:
+    description: >
+      Boot the device before handing it back, and wait until SpringBoard is
+      accepting launch requests — see the step for why a destination that will
+      run tests needs this and why xcodebuild's own boot is not enough. A
+      build-only destination has no use for it and should leave it off.
+    required: false
+    default: "false"
 outputs:
   name:
     description: >
@@ -97,4 +105,64 @@ runs:
 
         echo "::error::no simulator named '$TARGET' after 60s — either this machine dropped '$DEVICE' or CoreSimulator never came up"
         xcrun simctl list devices available || true
+        exit 1
+
+    # **xcodebuild installs into a simulator before SpringBoard is ready for it.**
+    #
+    # Handed a shut-down destination, `xcodebuild test` boots it, and installs
+    # the app the moment CoreSimulator reports the boot complete. That report
+    # comes when launchd_sim is up — SpringBoard, which is what actually opens
+    # apps, is still starting, and does not load its application library (its
+    # list of what is installed) for several more seconds: six on both Macs here,
+    # seventeen on a device's first boot. An install that completes inside that
+    # window is one SpringBoard never sees finish. It picks up the "install
+    # started" notice for the placeholder when its library loads, the "install
+    # finished" notice was sent before it was listening, and the app is left
+    # flagged as updating for as long as the device stays booted. Every launch
+    # request after that is refused — SpringBoard's own log says
+    #
+    #   Cannot launch application scene sceneID:com.colinsergay.Dose-default
+    #   while it's application is being updated
+    #
+    # and xcodebuild reports it as
+    #
+    #   Failed to install or launch the test runner. (Underlying Error: Simulator
+    #   device failed to launch com.colinsergay.Dose. The request was denied by
+    #   service delegate (SBMainWorkspace) for reason: Busy ("Application failed
+    #   preflight checks"))
+    #
+    # A run that fails this way has executed zero tests. It hit dose-app on most
+    # pushes of 2026-09-05, on both Macs, in the unit step as often as the UI
+    # step, and every attempt to explain it by what a *previous* run had left
+    # behind was wrong: the device was clean, the disk was empty, the load was
+    # low. The one green run followed a manual `simctl boot` — the
+    # device was already up when xcodebuild reached it, so it installed into a
+    # SpringBoard that was long since listening. That is all this step does,
+    # deliberately, every time.
+    #
+    # `bootstatus -b` boots the device if it is down and returns when the boot is
+    # *finished* — data migration included, which is what xcodebuild does not
+    # wait for. Then the probe: open a system app and close it again. If
+    # SpringBoard takes the request, it is loaded and will take xcodebuild's. A
+    # device that is already booted passes both in about a second, and xcodebuild
+    # leaves alone a device it did not boot, so on a self-hosted runner the
+    # device stays up from one job to the next and the cost is paid once.
+    - if: inputs.boot == 'true'
+      shell: bash
+      env:
+        TARGET: ${{ steps.resolve.outputs.name }}
+      run: |
+        xcrun simctl bootstatus "$TARGET" -b
+
+        for attempt in $(seq 1 30); do
+          if xcrun simctl launch "$TARGET" com.apple.Preferences >/dev/null 2>&1; then
+            xcrun simctl terminate "$TARGET" com.apple.Preferences >/dev/null 2>&1 || true
+            echo "$TARGET is booted and SpringBoard is opening apps (probe attempt $attempt)"
+            exit 0
+          fi
+          sleep 2
+        done
+
+        echo "::error::'$TARGET' reports booted but SpringBoard would not open an app in 60s — xcodebuild would fail the same way; see this step's comment"
+        xcrun simctl spawn "$TARGET" log show --last 3m --predicate 'process == "SpringBoard"' --style compact 2>/dev/null | tail -40 || true
         exit 1

@@ -38,6 +38,27 @@ Mac that builds the apps. This repo deliberately has no workflows at all. The
 runners are registered against the three iOS repos individually, never to the
 organisation, for the same reason.
 
+## Adding a Mac
+
+```sh
+./bootstrap-runner.sh --check                 # will this machine do?
+./bootstrap-runner.sh --tag mini Enlitened/japa Enlitened/dose-app Enlitened/lamp-and-line
+```
+
+Every runner labelled `self-hosted` is a candidate for every job, so GitHub
+sends work to whichever is idle. A second Mac that is *nearly* right therefore
+does not fail obviously — it fails at random, on whichever runs happen to land
+on it, for reasons that look like the code. `--check` is what stops that, and
+registration refuses to run when it fails: the pinned Xcode (read from
+`select-xcode`, so there is one source of truth), the stock simulators the
+per-runner clones are made from, and the tools these workflows assume the
+machine provides.
+
+`--tag` names the machine and keeps runner names unique across Macs — and with
+them the simulators, since those are keyed on the runner. Pass it; the fallback
+is a mangled hostname. Re-running is safe: a repo whose runner is already
+configured is skipped.
+
 ## Checking a repo still holds the shape
 
 ```sh
